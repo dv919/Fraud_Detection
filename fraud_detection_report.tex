@@ -1,0 +1,390 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{array}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red!70!black},
+    language=Python,
+    showstringspaces=false,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=5pt,
+    tabsize=4
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Fraud Detection Project}
+\lhead{\leftmark}
+\rfoot{Page \thepage}
+
+\title{
+    \vspace{-1cm}
+    \textbf{Financial Transaction Fraud Detection} \\[0.5em]
+    \large Project Report \\[0.3em]
+    \normalsize Using Logistic Regression and Streamlit
+}
+\author{AIML Project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────
+\section{Project Overview}
+% ─────────────────────────────────────────────
+
+This project builds an end-to-end machine learning pipeline to detect fraudulent financial transactions. The workflow consists of three stages:
+
+\begin{enumerate}[label=\textbf{\arabic*.}]
+    \item \textbf{Exploratory Data Analysis (EDA)} — understanding class distribution, transaction patterns, and suspicious behaviour signals.
+    \item \textbf{Feature Engineering and Model Training} — constructing derived features and training a Logistic Regression classifier using a scikit-learn \texttt{Pipeline}.
+    \item \textbf{Deployment} — serving predictions through an interactive Streamlit web application.
+\end{enumerate}
+
+% ─────────────────────────────────────────────
+\section{Dataset Description}
+% ─────────────────────────────────────────────
+
+\subsection{Source}
+
+The dataset (\texttt{AIML Dataset.csv}) is a synthetic mobile money transaction log containing \textbf{6,362,620 rows} and \textbf{11 columns}, with no missing values.
+
+\subsection{Columns}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\texttt{step}           & int64   & Time unit (1 step = 1 hour) \\
+\texttt{type}           & str     & Transaction type (PAYMENT, TRANSFER, etc.) \\
+\texttt{amount}         & float64 & Transaction amount \\
+\texttt{nameOrig}       & str     & Sender account ID \\
+\texttt{oldbalanceOrg}  & float64 & Sender balance before transaction \\
+\texttt{newbalanceOrig} & float64 & Sender balance after transaction \\
+\texttt{nameDest}       & str     & Receiver account ID \\
+\texttt{oldbalanceDest} & float64 & Receiver balance before transaction \\
+\texttt{newbalanceDest} & float64 & Receiver balance after transaction \\
+\texttt{isFraud}        & int64   & Target label (1 = fraud, 0 = legitimate) \\
+\texttt{isFlaggedFraud} & int64   & System-flagged (not used in model) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Class Imbalance}
+
+Only \textbf{0.13\%} of all transactions are fraudulent — a severe class imbalance that is a key challenge for the classifier.
+
+\begin{align}
+\text{Fraud rate} = \frac{|\{i : \texttt{isFraud}_i = 1\}|}{N} \times 100 = 0.13\%
+\end{align}
+
+% ─────────────────────────────────────────────
+\section{Exploratory Data Analysis}
+% ─────────────────────────────────────────────
+
+\subsection{Transaction Type Distribution}
+
+The dataset contains five transaction types. A bar chart of their counts reveals that \textbf{CASH\_OUT} and \textbf{PAYMENT} are the most frequent types.
+
+\subsection{Fraud by Transaction Type}
+
+A critical finding is that \textbf{fraud occurs exclusively in TRANSFER and CASH\_OUT} transactions. No fraudulent activity was observed in PAYMENT, DEBIT, or CASH\_IN.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Type} & \textbf{Total Count} & \textbf{Has Fraud?} \\
+\midrule
+CASH\_OUT  & 2,237,500 & Yes \\
+TRANSFER   &   532,909 & Yes \\
+PAYMENT    & (remaining) & No \\
+DEBIT      & (remaining) & No \\
+CASH\_IN   & (remaining) & No \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Amount Distribution}
+
+Transaction amounts are heavily right-skewed. A log-transform (\texttt{log1p}) is applied for visualisation:
+
+\begin{lstlisting}
+sns.histplot(np.log1p(df["amount"]), bins=100, kde=True, color="green")
+\end{lstlisting}
+
+\subsection{Zero-Balance-After-Transfer Pattern}
+
+A suspicious pattern was identified: transactions where the sender had a positive balance before the transaction but \textit{zero} balance after, specifically in TRANSFER or CASH\_OUT. This accounts for \textbf{1,188,074 transactions} and is strongly associated with fraud.
+
+\begin{lstlisting}
+zero_after_transfer = df[
+    (df["oldbalanceOrg"] > 0)
+    & (df["newbalanceOrig"] == 0)
+    & (df["type"].isin(["TRANSFER", "CASH_OUT"]))
+]
+\end{lstlisting}
+
+% ─────────────────────────────────────────────
+\section{Feature Engineering}
+% ─────────────────────────────────────────────
+
+Two derived features were constructed to capture balance movement:
+
+\begin{align}
+\texttt{balanceDiffOrig} &= \texttt{oldbalanceOrg} - \texttt{newbalanceOrig} \\
+\texttt{balanceDiffDest} &= \texttt{newbalanceDest} - \texttt{oldbalanceDest}
+\end{align}
+
+\begin{itemize}
+    \item A \textbf{positive} \texttt{balanceDiffOrig} means money left the sender (expected in fraud).
+    \item A \textbf{negative} value (1,399,253 cases) may indicate balance top-ups or data anomalies.
+    \item \texttt{balanceDiffDest} had 1,238,864 negative cases, indicating the receiver's balance decreased (suspicious in context of TRANSFER fraud).
+\end{itemize}
+
+\subsection{Final Feature Set for Modelling}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Feature} & \textbf{Type} \\
+\midrule
+\texttt{step}            & Numerical \\
+\texttt{type}            & Categorical (One-Hot Encoded) \\
+\texttt{amount}          & Numerical \\
+\texttt{oldbalanceOrg}   & Numerical \\
+\texttt{newbalanceOrig}  & Numerical \\
+\texttt{oldbalanceDest}  & Numerical \\
+\texttt{newbalanceDest}  & Numerical \\
+\texttt{balanceDiffOrig} & Numerical (engineered) \\
+\texttt{balanceDiffDest} & Numerical (engineered) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Note: \texttt{nameOrig}, \texttt{nameDest}, and \texttt{isFlaggedFraud} are excluded — account IDs are high-cardinality identifiers and \texttt{isFlaggedFraud} would constitute data leakage in a real deployment.
+
+% ─────────────────────────────────────────────
+\section{Model Architecture}
+% ─────────────────────────────────────────────
+
+\subsection{Pipeline Design}
+
+A scikit-learn \texttt{Pipeline} is used to chain preprocessing and classification:
+
+\begin{lstlisting}
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+
+preprocessor = ColumnTransformer(transformers=[
+    ('num', StandardScaler(), numerical_features),
+    ('cat', OneHotEncoder(), ['type'])
+])
+
+pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('classifier', LogisticRegression())
+])
+\end{lstlisting}
+
+\subsection{Preprocessing Steps}
+
+\begin{itemize}
+    \item \textbf{StandardScaler} — standardises numerical features to zero mean and unit variance, preventing features with large magnitudes (e.g.\ \texttt{amount}) from dominating the model.
+    \item \textbf{OneHotEncoder} — converts the categorical \texttt{type} column into binary indicator columns (one per transaction type).
+\end{itemize}
+
+\subsection{Classifier}
+
+\textbf{Logistic Regression} is chosen as the baseline classifier. It models the log-odds of fraud as a linear combination of features:
+
+\begin{align}
+P(\texttt{isFraud} = 1 \mid \mathbf{x}) = \frac{1}{1 + e^{-(\mathbf{w}^\top \mathbf{x} + b)}}
+\end{align}
+
+\subsection{Train--Test Split}
+
+\begin{lstlisting}
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+\end{lstlisting}
+
+A stratified 80/20 split preserves the fraud ratio in both partitions, which is critical given the 0.13\% class imbalance.
+
+\subsection{Model Persistence}
+
+The trained pipeline is serialised with \texttt{joblib}:
+
+\begin{lstlisting}
+import joblib
+joblib.dump(pipeline, "fraud_detection_model.pkl")
+\end{lstlisting}
+
+% ─────────────────────────────────────────────
+\section{Streamlit Web Application}
+% ─────────────────────────────────────────────
+
+\subsection{Application Structure}
+
+The app (\texttt{fraud\_detection.py}) provides a browser-based interface for real-time prediction.
+
+\begin{lstlisting}
+import streamlit as st
+import pandas as pd
+import joblib
+
+def load_model(path="fraud_detection_model.pkl"):
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        st.error(f"Failed to load model: {e}")
+        return None
+\end{lstlisting}
+
+\subsection{User Inputs}
+
+The user provides the following fields via the sidebar form:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{UI Label} & \textbf{Mapped Column} \\
+\midrule
+Transaction Type     & \texttt{type} \\
+Step (time unit)     & \texttt{step} \\
+Amount               & \texttt{amount} \\
+Old Balance (Sender) & \texttt{oldbalanceOrg} \\
+New Balance (Sender) & \texttt{newbalanceOrig} \\
+Old Balance (Receiver) & \texttt{oldbalanceDest} \\
+New Balance (Receiver) & \texttt{newbalanceDest} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Derived Features (Auto-computed)}
+
+The two engineered features are computed automatically from the user inputs before prediction:
+
+\begin{lstlisting}
+balanceDiffOrig = oldbalanceOrg - newbalanceOrig
+balanceDiffDest = newbalanceDest - oldbalanceDest
+\end{lstlisting}
+
+\subsection{Prediction Output}
+
+\begin{itemize}
+    \item If \texttt{predict()} returns 1: \textcolor{red}{\textbf{Fraudulent transaction}} (displayed as a red error banner).
+    \item If \texttt{predict()} returns 0: \textcolor{green!60!black}{\textbf{Legitimate transaction}} (displayed as a green success banner).
+    \item The fraud probability (\texttt{predict\_proba}) is shown alongside the label.
+\end{itemize}
+
+\subsection{Running the App}
+
+\begin{lstlisting}[language=bash]
+# Activate virtual environment (Windows)
+.venv\Scripts\Activate.ps1
+
+# Launch Streamlit
+streamlit run fraud_detection.py
+\end{lstlisting}
+
+% ─────────────────────────────────────────────
+\section{Project File Structure}
+% ─────────────────────────────────────────────
+
+\begin{lstlisting}[language=bash, numbers=none]
+FraudDetection/
+|-- AIML Dataset.csv            # Raw transaction data (6.3M rows)
+|-- analysis_model.ipynb        # EDA and model training notebook
+|-- fraud_detection_model.pkl   # Serialised trained pipeline
+|-- fraud_detection.py          # Streamlit prediction app
+|-- fraud_detection_report.tex  # This report
+|-- .venv/                      # Python virtual environment
+\end{lstlisting}
+
+% ─────────────────────────────────────────────
+\section{Dependencies}
+% ─────────────────────────────────────────────
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Package} & \textbf{Purpose} \\
+\midrule
+\texttt{pandas}        & Data loading and manipulation \\
+\texttt{numpy}         & Numerical operations \\
+\texttt{matplotlib}    & Plotting (EDA) \\
+\texttt{seaborn}       & Statistical visualisation \\
+\texttt{scikit-learn}  & ML pipeline, preprocessing, Logistic Regression \\
+\texttt{joblib}        & Model serialisation/deserialisation \\
+\texttt{streamlit}     & Interactive web application \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Install all dependencies into the virtual environment:
+
+\begin{lstlisting}[language=bash, numbers=none]
+.venv\Scripts\pip install pandas numpy matplotlib seaborn scikit-learn joblib streamlit
+\end{lstlisting}
+
+% ─────────────────────────────────────────────
+\section{Key Findings and Observations}
+% ─────────────────────────────────────────────
+
+\begin{enumerate}[label=\textbf{\arabic*.}]
+    \item \textbf{Extreme class imbalance} (0.13\% fraud) means accuracy alone is a misleading metric. Precision, recall, F1, and AUC-ROC are more informative.
+
+    \item \textbf{Fraud is confined to TRANSFER and CASH\_OUT} transactions. This could be leveraged as a hard filter in a production rule-based pre-screener.
+
+    \item \textbf{Zero-balance-after-transfer} is a strong fraud signal: 1,188,074 transactions match this pattern, many overlapping with known fraudulent cases.
+
+    \item \textbf{Balance difference features} (\texttt{balanceDiffOrig}, \texttt{balanceDiffDest}) explicitly encode the magnitude and direction of money movement, giving the linear model a stronger fraud signal than raw balances alone.
+
+    \item \textbf{Logistic Regression} provides an interpretable baseline. The sign and magnitude of each learned weight directly indicate whether a feature increases or decreases fraud probability.
+\end{enumerate}
+
+% ─────────────────────────────────────────────
+\section{Possible Improvements}
+% ─────────────────────────────────────────────
+
+\begin{itemize}
+    \item \textbf{Class imbalance handling} — apply SMOTE oversampling or \texttt{class\_weight='balanced'} in Logistic Regression to improve recall on the minority class.
+    \item \textbf{Non-linear models} — Random Forest or XGBoost typically outperform Logistic Regression on tabular fraud data.
+    \item \textbf{Threshold tuning} — adjust the decision threshold from 0.5 to maximise F1 or recall depending on business cost of false negatives.
+    \item \textbf{Feature selection} — use feature importance or coefficient magnitude to remove low-signal inputs.
+    \item \textbf{Cross-validation} — replace the single train--test split with k-fold CV for more robust performance estimates.
+\end{itemize}
+
+\end{document}
