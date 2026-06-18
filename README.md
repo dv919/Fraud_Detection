@@ -133,3 +133,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 - A **zero-balance-after-transfer** pattern (1,188,074 cases) is a strong fraud signal.
 - Engineered balance-difference features improve the linear model's ability to detect fraud.
 - With only 0.13% fraud, **precision, recall, F1, and AUC-ROC** are more meaningful than accuracy.
+
+## Author
+- Deeksha V
+- ED23B015
